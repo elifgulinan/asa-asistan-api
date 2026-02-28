@@ -184,6 +184,11 @@ def ads():
         # JSON parse
         import json, re
         clean = re.sub(r'```json|```', '', raw).strip()
+        # JSON başlangıcını bul
+        start = clean.find('{')
+        end = clean.rfind('}')
+        if start != -1 and end != -1:
+            clean = clean[start:end+1]
         ads_data = json.loads(clean)
     except ValueError as e:
         return jsonify({"error": str(e)}), 503
