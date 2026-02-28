@@ -1,6 +1,7 @@
 """
-ASA Asistan Flask API - URL analizi: çok sayfalı crawler + Ollama + rakip karşılaştırma.
+ASA Asistan Flask API - Mistral API + çok sayfalı crawler + rakip karşılaştırma.
 """
+import os
 import logging
 import requests
 from flask import Flask, request, jsonify
@@ -10,12 +11,43 @@ from crawler import scrape_seo
 app = Flask(__name__)
 CORS(app)
 
-OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "asa-kobi:latest"
-OLLAMA_TIMEOUT = 300
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+MISTRAL_MODEL = "open-mistral-7b"
+MISTRAL_HOST = "https://api.mistral.ai/v1/chat/completions"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def call_mistral(prompt: str) -> str:
+    if not MISTRAL_API_KEY:
+        raise ValueError("MISTRAL_API_KEY ayarlanmamış")
+    try:
+        r = requests.post(
+            MISTRAL_HOST,
+            headers={
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MISTRAL_MODEL,
+                "messages": [
+                    {"role": "system", "content": "Sen Türk KOBİ'lere SEO ve dijital pazarlama danışmanlığı yapan ASA Asistan'sın. Türkçe, kısa ve pratik yanıtlar ver."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 1000,
+                "temperature": 0.7
+            },
+            timeout=60
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except requests.exceptions.Timeout:
+        raise ValueError("Mistral yanıt vermedi (zaman aşımı)")
+    except requests.exceptions.HTTPError as e:
+        raise ValueError(f"Mistral HTTP hatası: {e}")
+    except Exception as e:
+        raise ValueError(f"Mistral hatası: {e}")
 
 
 def build_analysis_prompt(crawler_data: dict) -> str:
@@ -28,8 +60,6 @@ def build_analysis_prompt(crawler_data: dict) -> str:
 
     issues = summary.get("issues", [])
     issues_text = " | ".join([i['text'] for i in issues]) or "Sorun yok"
-
-    # Anasayfa verisi
     title = crawler_data.get("title") or "(yok)"
     meta = crawler_data.get("meta_description") or "(yok)"
     h1 = crawler_data.get("h1_tags", [])
@@ -56,7 +86,7 @@ def build_comparison_prompt(site: dict, rivals: list) -> str:
     def fmt(d):
         s = d.get("summary", {})
         return (
-            f"Başlık: {(d.get('title') or '(yok)')[:50]} | "
+            f"Başlık: {'Var' if d.get('title') else 'Yok'} | "
             f"Meta: {'Var' if d.get('meta_description') else 'Yok'} | "
             f"Kelime: {d.get('word_count',0)} | "
             f"Mobil: {'Evet' if d.get('has_mobile_friendly') else 'Hayır'} | "
@@ -65,31 +95,14 @@ def build_comparison_prompt(site: dict, rivals: list) -> str:
 
     rival_text = ""
     for i, r in enumerate(rivals, 1):
-        rival_text += f"Rakip {i} ({r.get('url','').replace('https://','').replace('http://','')[:30]}): {fmt(r)}\n"
+        rival_text += f"Rakip {i} ({r.get('url','')[:40]}): {fmt(r)}\n"
 
     return (
         f"Site karşılaştırması (Türkçe, kısa):\n"
-        f"Kendi siten ({site.get('url','').replace('https://','')[:30]}): {fmt(site)}\n"
+        f"Kendi siten ({site.get('url','')[:40]}): {fmt(site)}\n"
         f"{rival_text}\n"
         "1) Önde olduğun alanlar\n2) Geride olduğun alanlar\n3) En hızlı 3 kazanım"
     )
-
-
-def call_ollama(prompt: str) -> str:
-    try:
-        r = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=OLLAMA_TIMEOUT,
-        )
-        r.raise_for_status()
-        return (r.json().get("response") or "").strip()
-    except requests.exceptions.Timeout:
-        raise ValueError("Ollama yanıt vermedi (zaman aşımı)")
-    except requests.exceptions.ConnectionError:
-        raise ValueError(f"Ollama'ya bağlanılamadı: {OLLAMA_HOST}")
-    except Exception as e:
-        raise ValueError(f"Ollama hatası: {e}")
 
 
 @app.route("/", methods=["GET"])
@@ -111,17 +124,13 @@ def analyze():
     try:
         crawler_data = scrape_seo(url)
     except Exception as e:
-        logger.exception("Crawler hatası")
         return jsonify({"error": f"Crawler hatası: {str(e)}"}), 500
 
     try:
         prompt = build_analysis_prompt(crawler_data)
-        ai_analysis = call_ollama(prompt)
+        ai_analysis = call_mistral(prompt)
     except ValueError as e:
         return jsonify({"url": url, "crawler_data": crawler_data, "ai_analysis": None, "error": str(e)}), 503
-    except Exception as e:
-        logger.exception("Analiz hatası")
-        return jsonify({"error": f"Analiz hatası: {str(e)}"}), 500
 
     return jsonify({"url": url, "crawler_data": crawler_data, "ai_analysis": ai_analysis})
 
@@ -137,8 +146,6 @@ def compare():
         return jsonify({"error": '"url" boş olamaz'}), 400
     if not rivals:
         return jsonify({"error": 'En az 1 rakip URL gerekli'}), 400
-    if len(rivals) > 3:
-        return jsonify({"error": 'En fazla 3 rakip'}), 400
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
@@ -162,11 +169,9 @@ def compare():
 
     try:
         prompt = build_comparison_prompt(site_data, rival_data)
-        comparison = call_ollama(prompt)
+        comparison = call_mistral(prompt)
     except ValueError as e:
         return jsonify({"site": site_data, "rivals": rival_data, "comparison": None, "error": str(e)}), 503
-    except Exception as e:
-        return jsonify({"error": f"Karşılaştırma hatası: {str(e)}"}), 500
 
     return jsonify({"site": site_data, "rivals": rival_data, "comparison": comparison})
 
@@ -180,4 +185,5 @@ def server_error(e):
     return jsonify({"error": "Sunucu hatası"}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
