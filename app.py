@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def call_mistral(prompt: str, system: str = None) -> str:
+def call_mistral(prompt: str, system: str = None, max_tokens: int = 1000) -> str:
     if not MISTRAL_API_KEY:
         raise ValueError("MISTRAL_API_KEY ayarlanmamış")
     if not system:
@@ -34,7 +34,7 @@ def call_mistral(prompt: str, system: str = None) -> str:
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
                 ],
-                "max_tokens": 1000,
+                "max_tokens": max_tokens,
                 "temperature": 0.7
             },
             timeout=60
@@ -180,7 +180,7 @@ def ads():
     try:
         prompt = build_ads_prompt(crawler_data)
         system = "Sen Google Ads uzmanısın. Yanıtını SADECE geçerli JSON formatında ver, markdown veya açıklama ekleme."
-        raw = call_mistral(prompt, system=system)
+        raw = call_mistral(prompt, system=system, max_tokens=600)
         # JSON parse
         import json, re
         clean = re.sub(r'```json|```', '', raw).strip()
