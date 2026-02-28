@@ -9,7 +9,6 @@ from flask_cors import CORS
 from crawler import scrape_seo
 
 app = Flask(__name__)
-app.config['JSON_AS_ASCII'] = False
 CORS(app)
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
