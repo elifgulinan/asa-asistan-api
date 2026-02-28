@@ -7,6 +7,8 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from crawler import scrape_seo
+import json
+from flask import Flask, request, jsonify, Response
 
 app = Flask(__name__)
 CORS(app)
@@ -189,8 +191,7 @@ def ads():
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         return jsonify({"error": f"Ads analizi hatası: {str(e)}", "raw": raw if 'raw' in locals() else None}), 500
-    return jsonify({"url": url, "ads": ads_data})
-
+    return Response(json.dumps({"url": url, "ads": ads_data}, ensure_ascii=False), mimetype='application/json')
 
 @app.route("/api/compare", methods=["POST"])
 def compare():
