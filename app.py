@@ -81,7 +81,7 @@ def build_ads_prompt(d):
 
 def parse_ads(raw):
     def ex(label, sep):
-        m = re.search(rf'^{label}:\s*(.+)$', raw, re.MULTILINE | re.IGNORECASE)
+        m = re.search(rf'\*{{0,2}}{label}\*{{0,2}}:\*{{0,2}}\s*(.+)$', raw, re.MULTILINE | re.IGNORECASE)
         if not m:
             return []
         return [x.strip().strip('*').strip() for x in m.group(1).split(sep) if x.strip().strip('*').strip()]
