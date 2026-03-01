@@ -353,7 +353,7 @@ def analyze():
         sektor_bilgi = {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
 
     try:
-        ai_analysis = call_mistral(build_analysis_prompt(crawler_data, sektor_bilgi), max_tokens=600)
+        ai_analysis = call_mistral(build_analysis_prompt(crawler_data, sektor_bilgi), max_tokens=900)
     except Exception as e:
         return ok({
             "url": url,
@@ -447,7 +447,7 @@ def ads():
         raw = call_mistral(
             build_ads_prompt(crawler_data, sektor_bilgi),
             system="Google Ads uzmanisin. Sadece 4 satir yaz: KEYWORDS, HEADLINES, DESCRIPTIONS, NEGATIVE. Baska hicbir sey ekleme.",
-            max_tokens=200
+            max_tokens=300
         )
         logger.info(f"Ads raw: {raw}")
         ads_data = parse_ads(raw)
