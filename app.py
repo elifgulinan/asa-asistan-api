@@ -1,5 +1,6 @@
 """
 ASA Asistan Flask API — Mistral AI + çok sayfalı crawler + rakip karşılaştırma + AI Ads.
+v2: Sektör tespiti, bilişsel yük azaltma, AI SEO optimizasyonu.
 """
 import os
 import logging
@@ -37,40 +38,137 @@ def call_mistral(prompt, system=None, max_tokens=1000):
     r = requests.post(
         MISTRAL_HOST,
         headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"},
-        json={"model": MISTRAL_MODEL, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "max_tokens": max_tokens, "temperature": 0.3},
+        json={
+            "model": MISTRAL_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3
+        },
         timeout=60
     )
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()
 
 
-def build_analysis_prompt(d):
+# ─────────────────────────────────────────────
+# SEKTÖR TESPİTİ
+# ─────────────────────────────────────────────
+
+def detect_sector(d):
+    """
+    Sitenin sektörünü tespit et. 
+    Döner: {'sektor': 'estetik klinik', 'sehir': 'Bodrum', 'hedef_kitle': 'bireysel müşteriler'}
+    """
+    url = d.get("url", "")
+    title = d.get("title") or ""
+    meta = d.get("meta_description") or ""
+    h1 = " | ".join(d.get("h1_tags", [])[:3])
+    h2 = " | ".join(d.get("h2_tags", [])[:4])
+    body_snippet = (d.get("body_text") or "")[:300]
+
+    prompt = (
+        f"Aşağıdaki web sitesinin sektörünü, şehrini ve hedef kitlesini tespit et.\n"
+        f"URL: {url}\n"
+        f"Başlık: {title[:100]}\n"
+        f"Meta: {meta[:100]}\n"
+        f"H1: {h1[:100]}\n"
+        f"H2: {h2[:150]}\n"
+        f"İçerik: {body_snippet}\n\n"
+        "Sadece JSON döndür, başka hiçbir şey yazma:\n"
+        '{"sektor": "...", "sehir": "...", "hedef_kitle": "..."}\n'
+        "sektor örnekleri: hukuk bürosu, estetik klinik, restoran, inşaat, e-ticaret, güzellik salonu, muhasebe, diş kliniği, otel, oto galeri, vs.\n"
+        "sehir bilinmiyorsa boş bırak.\n"
+        "hedef_kitle: bireysel müşteriler veya kurumsal müşteriler veya her ikisi"
+    )
+    system = "Sadece JSON döndür. Başka hiçbir şey yazma. Türkçe."
+    try:
+        raw = call_mistral(prompt, system=system, max_tokens=100)
+        # JSON temizle
+        raw = re.sub(r'```json|```', '', raw).strip()
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning(f"Sektör tespiti başarısız: {e}")
+        return {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
+
+
+# ─────────────────────────────────────────────
+# ANALİZ PROMPT — "ONAYLA" MODELİ
+# ─────────────────────────────────────────────
+
+def build_analysis_prompt(d, sektor_bilgi):
     url = d.get("url", "")
     s = d.get("summary", {})
+    sektor = sektor_bilgi.get("sektor", "genel işletme")
+    sehir = sektor_bilgi.get("sehir", "")
+    hedef = sektor_bilgi.get("hedef_kitle", "bireysel müşteriler")
+
     if d.get("error"):
-        return f"SEO analizi yap:\nURL: {url}\nHata: {d['error']}"
+        return f"SEO analizi yap:\nURL: {url}\nSektör: {sektor}\nHata: {d['error']}"
+
     issues = " | ".join([i['text'] for i in s.get("issues", [])]) or "Sorun yok"
     title = d.get("title") or "(yok)"
     meta = d.get("meta_description") or "(yok)"
     h1 = d.get("h1_tags", [])
+    word_count = d.get("word_count", 0)
+    mobile = "Evet" if d.get("has_mobile_friendly") else "Hayır"
+
+    lokasyon = f" {sehir}'daki" if sehir else ""
+
     return (
-        f"Web sitesi SEO analizi (Türkçe, kısa ve net):\n"
-        f"URL: {url} | {s.get('total_pages_crawled',1)} sayfa\n"
-        f"Başlık: {title[:80]}\nMeta: {meta[:100]}\n"
-        f"H1: {len(h1)} | Kelime: {d.get('word_count',0)} | Mobil: {'Evet' if d.get('has_mobile_friendly') else 'Hayır'}\n"
-        f"Sorunlar: {issues}\n\nGüçlü yönler ve 3 kritik öneri yaz. Son iki satırda:\nÖNERİLEN BAŞLIK: ...\nÖNERİLEN META: ..."
+        f"Sen{lokasyon} bir {sektor} sitesini analiz ediyorsun.\n"
+        f"Hedef kitle: {hedef}\n"
+        f"URL: {url} | {s.get('total_pages_crawled', 1)} sayfa tarandı\n"
+        f"Başlık: {title[:80]}\n"
+        f"Meta: {meta[:100]}\n"
+        f"H1 sayısı: {len(h1)} | Kelime sayısı: {word_count} | Mobil uyumlu: {mobile}\n"
+        f"Tespit edilen sorunlar: {issues}\n\n"
+        f"Şimdi bu {sektor} sitesi için şunu yaz:\n\n"
+        f"1. Siteyi 1 cümleyle değerlendir (işletme sahibine hitap et, teknik terim kullanma)\n"
+        f"2. HAZIR OLAN şeyler: (Google'da ne iyi gözüküyor — max 2 madde, kısa)\n"
+        f"3. HAZIRLADIM: (işletme sahibine '3 şey hazırladım, onaylar mısınız?' formatında — "
+        f"teknik terim yok, sadece ne kazanacakları var)\n"
+        f"   - Hazır 1: [ne yapılacak] → [ne kazanacaklar]\n"
+        f"   - Hazır 2: [ne yapılacak] → [ne kazanacaklar]\n"
+        f"   - Hazır 3: [ne yapılacak] → [ne kazanacaklar]\n"
+        f"4. Son iki satırda:\n"
+        f"ÖNERİLEN BAŞLIK: ...\n"
+        f"ÖNERİLEN META: ...\n\n"
+        f"ÖNERİLEN BAŞLIK ve META hem Google hem de ChatGPT/Perplexity gibi AI arama motorları için optimize olmalı. "
+        f"Şehir adı, sektör ve en önemli hizmet mutlaka geçmeli. Doğal, soru-cevap formatına uygun yaz."
     )
 
 
-def build_ads_prompt(d):
+# ─────────────────────────────────────────────
+# ADS PROMPT
+# ─────────────────────────────────────────────
+
+def build_ads_prompt(d, sektor_bilgi=None):
     url = d.get("url", "")
     title = d.get("title") or ""
     h1 = d.get("h1_tags", [])
     h2 = d.get("h2_tags", [])
     ctx = ", ".join((h1 + h2)[:4]) if (h1 + h2) else title[:60]
+
+    sektor = ""
+    sehir = ""
+    if sektor_bilgi:
+        sektor = sektor_bilgi.get("sektor", "")
+        sehir = sektor_bilgi.get("sehir", "")
+
+    sektor_hint = ""
+    if sektor:
+        sektor_hint = f"Sektör: {sektor}"
+    if sehir:
+        sektor_hint += f" | Şehir: {sehir}"
+
     return (
-        f"Site: {url}\nKonu: {ctx[:100]}\n\n"
-        "Ornek:\n"
+        f"Site: {url}\n"
+        f"Konu: {ctx[:100]}\n"
+        f"{sektor_hint}\n\n"
+        "Örnek:\n"
         "KEYWORDS: bodrum sac ekimi, prp tedavisi, botoks bodrum, estetik klinik, sac ekimi fiyatlari\n"
         "HEADLINES: Bodrum Sac Ekimi Uzmani | PRP ve Botoks | Estetik Klinik Bodrum\n"
         "DESCRIPTIONS: Uzman ekip ile kalici sonuclar. Randevu alin! | Bodrum estetik merkezi. Hemen arayin!\n"
@@ -93,13 +191,72 @@ def parse_ads(raw):
     }
 
 
-def build_comparison_prompt(site, rivals):
+# ─────────────────────────────────────────────
+# META ÖNERİSİ PROMPT — AI SEO DAHİL
+# ─────────────────────────────────────────────
+
+def build_meta_prompt(d, sektor_bilgi):
+    url = d.get("url", "")
+    title = d.get("title") or "(yok)"
+    meta = d.get("meta_description") or "(yok)"
+    sektor = sektor_bilgi.get("sektor", "genel işletme")
+    sehir = sektor_bilgi.get("sehir", "")
+    h1 = " | ".join(d.get("h1_tags", [])[:2])
+
+    lokasyon = f"{sehir} " if sehir else ""
+
+    return (
+        f"Bir {lokasyon}{sektor} sitesi için SEO meta içerikleri yaz.\n"
+        f"URL: {url}\n"
+        f"Mevcut başlık: {title[:80]}\n"
+        f"Mevcut meta: {meta[:120]}\n"
+        f"H1: {h1[:100]}\n\n"
+        f"Kurallar:\n"
+        f"- Başlık: max 60 karakter, {lokasyon}{sektor} ana hizmet içermeli\n"
+        f"- Meta: max 155 karakter, doğal dil, soru-cevap formatına uygun (AI arama için)\n"
+        f"- Her ikisi de hem Google hem ChatGPT/Perplexity/Gemini için optimize olmalı\n"
+        f"- Şehir adı mutlaka geçmeli (varsa)\n\n"
+        f"Sadece şunu yaz:\n"
+        f"ÖNERİLEN BAŞLIK: ...\n"
+        f"ÖNERİLEN META: ..."
+    )
+
+
+# ─────────────────────────────────────────────
+# KARŞILAŞTIRMA PROMPT
+# ─────────────────────────────────────────────
+
+def build_comparison_prompt(site, rivals, sektor_bilgi=None):
+    sektor = sektor_bilgi.get("sektor", "genel işletme") if sektor_bilgi else "genel işletme"
+
     def fmt(d):
         s = d.get("summary", {})
-        return f"Başlık:{'Var' if d.get('title') else 'Yok'} Meta:{'Var' if d.get('meta_description') else 'Yok'} Kelime:{d.get('word_count',0)} Mobil:{'E' if d.get('has_mobile_friendly') else 'H'}"
-    rival_text = "".join([f"Rakip {i+1} ({r.get('url','')[:30]}): {fmt(r)}\n" for i, r in enumerate(rivals)])
-    return f"Karşılaştırma (Türkçe, kısa):\nSite ({site.get('url','')[:30]}): {fmt(site)}\n{rival_text}\n1) Önde olduğun alanlar\n2) Geride olduğun alanlar\n3) En hızlı 3 kazanım"
+        return (
+            f"Başlık:{'Var' if d.get('title') else 'Yok'} "
+            f"Meta:{'Var' if d.get('meta_description') else 'Yok'} "
+            f"Kelime:{d.get('word_count', 0)} "
+            f"Mobil:{'E' if d.get('has_mobile_friendly') else 'H'}"
+        )
 
+    rival_text = "".join([
+        f"Rakip {i+1} ({r.get('url', '')[:30]}): {fmt(r)}\n"
+        for i, r in enumerate(rivals)
+    ])
+
+    return (
+        f"Sektör: {sektor}\n"
+        f"Karşılaştırma (Türkçe, kısa, işletme sahibine hitap et):\n"
+        f"Senin siten ({site.get('url', '')[:30]}): {fmt(site)}\n"
+        f"{rival_text}\n"
+        f"1) Rakiplerden önde olduğun alanlar\n"
+        f"2) Geride olduğun alanlar\n"
+        f"3) Bu hafta yapılabilecek en hızlı 3 kazanım"
+    )
+
+
+# ─────────────────────────────────────────────
+# ENDPOINTS
+# ─────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def index():
@@ -116,15 +273,37 @@ def analyze():
         return err('"url" boş olamaz')
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
     try:
         crawler_data = scrape_seo(url)
     except Exception as e:
         return err(f"Crawler hatası: {e}", 500)
+
+    # Sektör tespiti
     try:
-        ai_analysis = call_mistral(build_analysis_prompt(crawler_data))
+        sektor_bilgi = detect_sector(crawler_data)
+        logger.info(f"Sektör tespiti: {sektor_bilgi}")
     except Exception as e:
-        return ok({"url": url, "crawler_data": crawler_data, "ai_analysis": None, "error": str(e)})
-    return ok({"url": url, "crawler_data": crawler_data, "ai_analysis": ai_analysis})
+        logger.warning(f"Sektör tespiti atlandı: {e}")
+        sektor_bilgi = {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
+
+    try:
+        ai_analysis = call_mistral(build_analysis_prompt(crawler_data, sektor_bilgi), max_tokens=600)
+    except Exception as e:
+        return ok({
+            "url": url,
+            "crawler_data": crawler_data,
+            "sektor_bilgi": sektor_bilgi,
+            "ai_analysis": None,
+            "error": str(e)
+        })
+
+    return ok({
+        "url": url,
+        "crawler_data": crawler_data,
+        "sektor_bilgi": sektor_bilgi,
+        "ai_analysis": ai_analysis
+    })
 
 
 @app.route("/api/ads", methods=["POST"])
@@ -134,6 +313,8 @@ def ads():
     data = request.get_json()
     url = (data.get("url") or "").strip()
     crawler_data = data.get("crawler_data")
+    sektor_bilgi = data.get("sektor_bilgi")  # frontend'den geçebilir
+
     if not url:
         return err('"url" boş olamaz')
     if not crawler_data:
@@ -143,15 +324,28 @@ def ads():
             crawler_data = scrape_seo(url)
         except Exception as e:
             return err(f"Crawler hatası: {e}", 500)
+
+    # Sektör bilgisi yoksa tespit et
+    if not sektor_bilgi:
+        try:
+            sektor_bilgi = detect_sector(crawler_data)
+        except Exception:
+            sektor_bilgi = {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
+
     raw = ""
     try:
-        raw = call_mistral(build_ads_prompt(crawler_data), system="Google Ads uzmanisin. Sadece 4 satir yaz: KEYWORDS, HEADLINES, DESCRIPTIONS, NEGATIVE. Baska hicbir sey ekleme.", max_tokens=200)
+        raw = call_mistral(
+            build_ads_prompt(crawler_data, sektor_bilgi),
+            system="Google Ads uzmanisin. Sadece 4 satir yaz: KEYWORDS, HEADLINES, DESCRIPTIONS, NEGATIVE. Baska hicbir sey ekleme.",
+            max_tokens=200
+        )
         logger.info(f"Ads raw: {raw}")
         ads_data = parse_ads(raw)
     except Exception as e:
         logger.error(f"Ads error: {e}, raw: {raw}")
         ads_data = {"keywords": [], "ad_headlines": [], "ad_descriptions": [], "negative_keywords": []}
-    return ok({"url": url, "ads": ads_data})
+
+    return ok({"url": url, "ads": ads_data, "sektor_bilgi": sektor_bilgi})
 
 
 @app.route("/api/compare", methods=["POST"])
@@ -167,10 +361,18 @@ def compare():
         return err('En az 1 rakip URL gerekli')
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+
     try:
         site_data = scrape_seo(url)
     except Exception as e:
         return err(f"Site tarama hatası: {e}", 500)
+
+    # Sektör tespiti
+    try:
+        sektor_bilgi = detect_sector(site_data)
+    except Exception:
+        sektor_bilgi = {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
+
     rival_data = []
     for r_url in rivals:
         r_url = r_url.strip()
@@ -182,12 +384,29 @@ def compare():
             rival_data.append(scrape_seo(r_url))
         except Exception as e:
             rival_data.append({"url": r_url, "error": str(e)})
-    try:
-        comparison = call_mistral(build_comparison_prompt(site_data, rival_data))
-    except Exception as e:
-        return ok({"site": site_data, "rivals": rival_data, "comparison": None, "error": str(e)})
-    return ok({"site": site_data, "rivals": rival_data, "comparison": comparison})
 
+    try:
+        comparison = call_mistral(build_comparison_prompt(site_data, rival_data, sektor_bilgi))
+    except Exception as e:
+        return ok({
+            "site": site_data,
+            "rivals": rival_data,
+            "sektor_bilgi": sektor_bilgi,
+            "comparison": None,
+            "error": str(e)
+        })
+
+    return ok({
+        "site": site_data,
+        "rivals": rival_data,
+        "sektor_bilgi": sektor_bilgi,
+        "comparison": comparison
+    })
+
+
+# ─────────────────────────────────────────────
+# HATA YÖNETİMİ
+# ─────────────────────────────────────────────
 
 @app.errorhandler(404)
 def not_found(e):
@@ -196,6 +415,7 @@ def not_found(e):
 @app.errorhandler(500)
 def server_error(e):
     return err("Sunucu hatası", 500)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
