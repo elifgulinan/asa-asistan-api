@@ -223,6 +223,71 @@ def build_meta_prompt(d, sektor_bilgi):
 
 
 # ─────────────────────────────────────────────
+# AI SEO PROMPT — ChatGPT/Perplexity/Gemini'de görün
+# ─────────────────────────────────────────────
+
+def build_ai_seo_prompt(d, sektor_bilgi):
+    url = d.get("url", "")
+    sektor = sektor_bilgi.get("sektor", "genel işletme")
+    sehir = sektor_bilgi.get("sehir", "")
+    hedef = sektor_bilgi.get("hedef_kitle", "bireysel müşteriler")
+    lokasyon = f"{sehir} " if sehir else ""
+
+    h1 = " | ".join(d.get("h1_tags", [])[:3])
+    h2 = " | ".join(d.get("h2_tags", [])[:4])
+    body = (d.get("body_text") or "")[:400]
+
+    return (
+        f"Sen bir {lokasyon}{sektor} sitesi için AI SEO stratejisi hazırlıyorsun.\n"
+        f"Hedef kitle: {hedef}\n"
+        f"URL: {url}\n"
+        f"H1: {h1[:100]}\nH2: {h2[:150]}\nİçerik: {body}\n\n"
+        f"ChatGPT, Perplexity ve Gemini gibi AI arama motorlarında '{lokasyon}{sektor}' aramasında "
+        f"bu sitenin önerilmesi için şunları hazırla:\n\n"
+        f"1. SORU-CEVAP (5 adet): Müşterilerin en çok sorduğu sorular ve kısa net cevaplar.\n"
+        f"   Format: S: [soru] / C: [1-2 cümle cevap]\n"
+        f"   Sorular doğal konuşma dilinde olmalı, teknik terim yok.\n\n"
+        f"2. İŞLETME TANITIM BLOĞU: 3-4 cümlelik özet. AI bu bloğu doğrudan alıntılar.\n"
+        f"   İçermeli: ne yapıyor, nerede, neden güvenilir, nasıl iletişim.\n\n"
+        f"3. GÖRSEL ÖNERİSİ: Bu sektör için ideal fotoğraf nasıl olmalı?\n"
+        f"   Format: 'Fotoğrafta şunlar olmalı: ...'\n"
+        f"   Canva veya AI görsel aracına yapıştırılabilecek kadar net bir tarif yaz.\n"
+        f"   Gerçekçi, profesyonel, klişesiz olsun.\n\n"
+        f"Sadece bu 3 bölümü yaz, başka hiçbir şey ekleme. Türkçe, sade dil."
+    )
+
+
+def parse_ai_seo(raw):
+    """AI SEO çıktısını parse et"""
+    result = {
+        "soru_cevap": [],
+        "tanitim_blogu": "",
+        "gorsel_onerisi": ""
+    }
+
+    # Soru-cevap bloğunu çıkar
+    sc_match = re.search(r'SORU-CEVAP.*?\n(.*?)(?=\n\d\.|İŞLETME|$)', raw, re.DOTALL | re.IGNORECASE)
+    if sc_match:
+        sc_text = sc_match.group(1)
+        pairs = re.findall(r'S:\s*(.+?)\s*/\s*C:\s*(.+?)(?=\nS:|\Z)', sc_text, re.DOTALL)
+        result["soru_cevap"] = [{"soru": s.strip(), "cevap": c.strip()} for s, c in pairs]
+
+    # Tanıtım bloğunu çıkar
+    tanitim_match = re.search(r'İŞLETME TANITIM BLOĞU.*?\n(.*?)(?=\n\d\.|GÖRSEL|$)', raw, re.DOTALL | re.IGNORECASE)
+    if tanitim_match:
+        result["tanitim_blogu"] = tanitim_match.group(1).strip()
+
+    # Görsel önerisini çıkar
+    gorsel_match = re.search(r'GÖRSEL ÖNERİSİ.*?\n(.*?)$', raw, re.DOTALL | re.IGNORECASE)
+    if gorsel_match:
+        result["gorsel_onerisi"] = gorsel_match.group(1).strip()
+
+    # Parse başarısız olduysa ham metni de koy
+    result["raw"] = raw
+    return result
+
+
+# ─────────────────────────────────────────────
 # KARŞILAŞTIRMA PROMPT
 # ─────────────────────────────────────────────
 
@@ -298,12 +363,57 @@ def analyze():
             "error": str(e)
         })
 
+    # AI SEO — ChatGPT/Perplexity/Gemini'de görün
+    try:
+        ai_seo_raw = call_mistral(build_ai_seo_prompt(crawler_data, sektor_bilgi), max_tokens=800)
+        ai_seo = parse_ai_seo(ai_seo_raw)
+        logger.info(f"AI SEO tamamlandı: {len(ai_seo.get('soru_cevap', []))} soru-cevap")
+    except Exception as e:
+        logger.warning(f"AI SEO atlandı: {e}")
+        ai_seo = {"soru_cevap": [], "tanitim_blogu": "", "gorsel_onerisi": "", "raw": ""}
+
     return ok({
         "url": url,
         "crawler_data": crawler_data,
         "sektor_bilgi": sektor_bilgi,
-        "ai_analysis": ai_analysis
+        "ai_analysis": ai_analysis,
+        "ai_seo": ai_seo
     })
+
+
+@app.route("/api/ai_seo", methods=["POST"])
+def ai_seo_endpoint():
+    """Sadece AI SEO çıktısı — ayrı çağrılabilir"""
+    if not request.is_json:
+        return err("Content-Type: application/json gerekli")
+    data = request.get_json()
+    url = (data.get("url") or "").strip()
+    crawler_data = data.get("crawler_data")
+    sektor_bilgi = data.get("sektor_bilgi")
+
+    if not url:
+        return err('"url" boş olamaz')
+    if not crawler_data:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        try:
+            crawler_data = scrape_seo(url)
+        except Exception as e:
+            return err(f"Crawler hatası: {e}", 500)
+
+    if not sektor_bilgi:
+        try:
+            sektor_bilgi = detect_sector(crawler_data)
+        except Exception:
+            sektor_bilgi = {"sektor": "genel işletme", "sehir": "", "hedef_kitle": "bireysel müşteriler"}
+
+    try:
+        ai_seo_raw = call_mistral(build_ai_seo_prompt(crawler_data, sektor_bilgi), max_tokens=800)
+        ai_seo = parse_ai_seo(ai_seo_raw)
+    except Exception as e:
+        return err(f"AI SEO hatası: {e}", 500)
+
+    return ok({"url": url, "sektor_bilgi": sektor_bilgi, "ai_seo": ai_seo})
 
 
 @app.route("/api/ads", methods=["POST"])
