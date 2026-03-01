@@ -37,7 +37,7 @@ def call_mistral(prompt, system=None, max_tokens=1000):
     r = requests.post(
         MISTRAL_HOST,
         headers={"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"},
-        json={"model": MISTRAL_MODEL, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "max_tokens": max_tokens, "temperature": 0.7},
+        json={"model": MISTRAL_MODEL, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "max_tokens": max_tokens, "temperature": 0.3},
         timeout=60
     )
     r.raise_for_status()
@@ -70,20 +70,22 @@ def build_ads_prompt(d):
     ctx = ", ".join((h1 + h2)[:4]) if (h1 + h2) else title[:60]
     return (
         f"Site: {url}\nKonu: {ctx[:100]}\n\n"
-        "Google Ads onerileri. SADECE bu formatta yaz:\n"
-        "KEYWORDS: k1, k2, k3, k4, k5\n"
-        "HEADLINES: h1 | h2 | h3\n"
-        "DESCRIPTIONS: d1 | d2\n"
-        "NEGATIVE: n1, n2, n3"
+        "Ornek format:\n"
+        "KEYWORDS: kelime1, kelime2, kelime3, kelime4, kelime5\n"
+        "HEADLINES: baslik1 | baslik2 | baslik3\n"
+        "DESCRIPTIONS: aciklama1 | aciklama2\n"
+        "NEGATIVE: negatif1, negatif2, negatif3\n\n"
+        "Simdi bu site icin ayni formatta Turkce yaz. Sadece 4 satir yaz, baska hicbir sey ekleme:"
     )
 
 
 def parse_ads(raw):
     def ex(label, sep):
-        m = re.search(rf'{label}:\s*(.+)', raw, re.IGNORECASE)
+        m = re.search(rf'^{label}:\s*(.+)$', raw, re.MULTILINE | re.IGNORECASE)
         if not m:
             return []
-        return [x.strip() for x in m.group(1).split(sep) if x.strip()]
+        items = [x.strip().strip('*').strip() for x in m.group(1).split(sep) if x.strip().strip('*').strip()]
+        return items
     return {
         "keywords": [{"keyword": k, "intent": "ticari", "priority": "orta"} for k in ex("KEYWORDS", ",")],
         "ad_headlines": ex("HEADLINES", "|"),
@@ -143,7 +145,7 @@ def ads():
         except Exception as e:
             return err(f"Crawler hatası: {e}", 500)
     try:
-        raw = call_mistral(build_ads_prompt(crawler_data), system="Google Ads uzmanisin. Sadece istenen formatta yaz.", max_tokens=300)
+        raw = call_mistral(build_ads_prompt(crawler_data), system="Sen Google Ads uzmanisın. Sadece istenen 4 satir formatta yaz, baska hicbir sey ekleme. Turkce kelimeler kullan.", max_tokens=200)
         ads_data = parse_ads(raw)
     except Exception:
         ads_data = {"keywords": [], "ad_headlines": [], "ad_descriptions": [], "negative_keywords": []}
