@@ -70,12 +70,12 @@ def build_ads_prompt(d):
     ctx = ", ".join((h1 + h2)[:4]) if (h1 + h2) else title[:60]
     return (
         f"Site: {url}\nKonu: {ctx[:100]}\n\n"
-        "Ornek format:\n"
-        "KEYWORDS: kelime1, kelime2, kelime3, kelime4, kelime5\n"
-        "HEADLINES: baslik1 | baslik2 | baslik3\n"
-        "DESCRIPTIONS: aciklama1 | aciklama2\n"
-        "NEGATIVE: negatif1, negatif2, negatif3\n\n"
-        "Simdi bu site icin ayni formatta Turkce yaz. Sadece 4 satir yaz, baska hicbir sey ekleme:"
+        "Ornek:\n"
+        "KEYWORDS: bodrum sac ekimi, prp tedavisi, botoks bodrum, estetik klinik, sac ekimi fiyatlari\n"
+        "HEADLINES: Bodrum Sac Ekimi Uzmani | PRP ve Botoks | Estetik Klinik Bodrum\n"
+        "DESCRIPTIONS: Uzman ekip ile kalici sonuclar. Randevu alin! | Bodrum estetik merkezi. Hemen arayin!\n"
+        "NEGATIVE: ucretsiz, bedava, kendin yap\n\n"
+        f"Simdi {url} icin ayni formatta yaz. Sadece 4 satir:"
     )
 
 
@@ -84,8 +84,7 @@ def parse_ads(raw):
         m = re.search(rf'^{label}:\s*(.+)$', raw, re.MULTILINE | re.IGNORECASE)
         if not m:
             return []
-        items = [x.strip().strip('*').strip() for x in m.group(1).split(sep) if x.strip().strip('*').strip()]
-        return items
+        return [x.strip().strip('*').strip() for x in m.group(1).split(sep) if x.strip().strip('*').strip()]
     return {
         "keywords": [{"keyword": k, "intent": "ticari", "priority": "orta"} for k in ex("KEYWORDS", ",")],
         "ad_headlines": ex("HEADLINES", "|"),
@@ -144,10 +143,13 @@ def ads():
             crawler_data = scrape_seo(url)
         except Exception as e:
             return err(f"Crawler hatası: {e}", 500)
+    raw = ""
     try:
-        raw = call_mistral(build_ads_prompt(crawler_data), system="Sen Google Ads uzmanisın. Sadece istenen 4 satir formatta yaz, baska hicbir sey ekleme. Turkce kelimeler kullan.", max_tokens=200)
+        raw = call_mistral(build_ads_prompt(crawler_data), system="Google Ads uzmanisin. Sadece 4 satir yaz: KEYWORDS, HEADLINES, DESCRIPTIONS, NEGATIVE. Baska hicbir sey ekleme.", max_tokens=200)
+        logger.info(f"Ads raw: {raw}")
         ads_data = parse_ads(raw)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ads error: {e}, raw: {raw}")
         ads_data = {"keywords": [], "ad_headlines": [], "ad_descriptions": [], "negative_keywords": []}
     return ok({"url": url, "ads": ads_data})
 
