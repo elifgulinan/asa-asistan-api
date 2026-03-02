@@ -258,31 +258,42 @@ def build_ai_seo_prompt(d, sektor_bilgi):
 
 
 def parse_ai_seo(raw):
-    """AI SEO çıktısını parse et"""
-    result = {
-        "soru_cevap": [],
-        "tanitim_blogu": "",
-        "gorsel_onerisi": ""
-    }
+    import re as _re
+    result = {"soru_cevap": [], "tanitim_blogu": "", "gorsel_onerisi": ""}
 
-    # Soru-cevap bloğunu çıkar
-    sc_match = re.search(r'SORU-CEVAP.*?\n(.*?)(?=\n\d\.|İŞLETME|$)', raw, re.DOTALL | re.IGNORECASE)
-    if sc_match:
-        sc_text = sc_match.group(1)
-        pairs = re.findall(r'S:\s*(.+?)\s*/\s*C:\s*(.+?)(?=\nS:|\Z)', sc_text, re.DOTALL)
-        result["soru_cevap"] = [{"soru": s.strip(), "cevap": c.strip()} for s, c in pairs]
+    # SORU-CEVAP bolumunu izole et
+    sc_section = _re.search(r'SORU-CEVAP.*?' + chr(10) + r'(.*?)(?=' + chr(10) + r'\s*2\.\s*[IiTGtg]|ISLETME|TANITIM)', raw, _re.DOTALL | _re.IGNORECASE)
+    if sc_section:
+        sc_text = sc_section.group(1)
+        pairs = []
+        # Format 1: S: soru / C: cevap (ayni satir)
+        pairs = _re.findall(r'S:\s*(.+?)\s*/\s*C:\s*(.+?)(?=' + chr(10) + r'S:|\Z)', sc_text, _re.DOTALL)
+        # Format 2: S+C ayri satirda
+        if not pairs:
+            pairs = _re.findall(r'S:\s*(.+?)' + chr(10) + r'C:\s*(.+?)(?=' + chr(10) + r'S:|\Z)', sc_text, _re.DOTALL)
+        # Format 3: soru isareti + alttaki satir
+        if not pairs:
+            lines = sc_text.split(chr(10))
+            for i, line in enumerate(lines[:-1]):
+                if '?' in line and i+1 < len(lines) and lines[i+1].strip():
+                    pairs.append((line.strip(), lines[i+1].strip()))
+        result["soru_cevap"] = [
+            {"soru": s.strip().lstrip('0123456789.- ').strip('*').strip(),
+             "cevap": c.strip().strip('*').strip()}
+            for s, c in pairs[:5]
+            if len(s.strip()) > 5 and len(c.strip()) > 5
+        ]
 
-    # Tanıtım bloğunu çıkar
-    tanitim_match = re.search(r'İŞLETME TANITIM BLOĞU.*?\n(.*?)(?=\n\d\.|GÖRSEL|$)', raw, re.DOTALL | re.IGNORECASE)
+    # TANITIM BLOGU
+    tanitim_match = _re.search(r'(?:ISLETME\s*TANITIM|TANITIM\s*BLOGU|TANITIM\s*BLO)[^' + chr(10) + r']*' + chr(10) + r'(.*?)(?=' + chr(10) + r'\s*3\.|GORSEL|GÖRSEL|$)', raw, _re.DOTALL | _re.IGNORECASE)
     if tanitim_match:
-        result["tanitim_blogu"] = tanitim_match.group(1).strip()
+        result["tanitim_blogu"] = tanitim_match.group(1).strip().strip('*').strip()
 
-    # Görsel önerisini çıkar
-    gorsel_match = re.search(r'GÖRSEL ÖNERİSİ.*?\n(.*?)$', raw, re.DOTALL | re.IGNORECASE)
+    # GORSEL ONERISI
+    gorsel_match = _re.search(r'(?:GORSEL|GÖRSEL)[^' + chr(10) + r']*' + chr(10) + r'(.*?)$', raw, _re.DOTALL | _re.IGNORECASE)
     if gorsel_match:
         result["gorsel_onerisi"] = gorsel_match.group(1).strip()
 
-    # Parse başarısız olduysa ham metni de koy
     result["raw"] = raw
     return result
 
