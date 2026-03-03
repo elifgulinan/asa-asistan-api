@@ -9,7 +9,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 MAX_PAGES = 5
 REQUEST_TIMEOUT = 15
@@ -25,7 +35,15 @@ def fix_encoding(text):
 
 
 def get_soup(url):
-    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    # İlk istek — Cloudflare cookie set etsin
+    resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+    # Cloudflare challenge sayfasıysa kısa bekle ve tekrar dene
+    if resp.status_code == 403 or 'cf-browser-verification' in resp.text.lower() or 'checking your browser' in resp.text.lower():
+        import time
+        time.sleep(2)
+        resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
     content_type = resp.headers.get('content-type', '').lower()
     if 'charset=' in content_type:
         charset = content_type.split('charset=')[-1].strip().split(';')[0].strip()
