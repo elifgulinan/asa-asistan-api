@@ -1,10 +1,12 @@
 """
-ASA Asistan Crawler — çok sayfalı SEO tarayıcı, encoding fix dahil.
+ASA Asistan Crawler — Playwright destekli, Wix/Cloudflare bypass.
+Önce requests dener, 0 kelime veya engel varsa Playwright devreye girer.
 """
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -34,26 +36,79 @@ def fix_encoding(text):
         return text
 
 
+def is_blocked(html_text, status_code):
+    if status_code == 403:
+        return True
+    lower = html_text.lower()
+    if any(x in lower for x in [
+        'cf-browser-verification',
+        'checking your browser',
+        'just a moment',
+        'enable javascript',
+        'please enable cookies',
+        'ddos protection',
+    ]):
+        return True
+    return False
+
+
+def get_html_with_playwright(url):
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                ]
+            )
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+                locale="tr-TR",
+            )
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+            html = page.content()
+            browser.close()
+            return html, 200
+    except Exception as e:
+        logger.error(f"Playwright hatası: {e}")
+        return None, None
+
+
 def get_soup(url):
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    # İlk istek — Cloudflare cookie set etsin
-    resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-    # Cloudflare challenge sayfasıysa kısa bekle ve tekrar dene
-    if resp.status_code == 403 or 'cf-browser-verification' in resp.text.lower() or 'checking your browser' in resp.text.lower():
-        import time
-        time.sleep(2)
+    try:
+        session = requests.Session()
+        session.headers.update(HEADERS)
         resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-    content_type = resp.headers.get('content-type', '').lower()
-    if 'charset=' in content_type:
-        charset = content_type.split('charset=')[-1].strip().split(';')[0].strip()
-        try:
-            resp.encoding = charset
-        except Exception:
+        content_type = resp.headers.get('content-type', '').lower()
+        if 'charset=' in content_type:
+            charset = content_type.split('charset=')[-1].strip().split(';')[0].strip()
+            try:
+                resp.encoding = charset
+            except Exception:
+                resp.encoding = resp.apparent_encoding or 'utf-8'
+        else:
             resp.encoding = resp.apparent_encoding or 'utf-8'
-    else:
-        resp.encoding = resp.apparent_encoding or 'utf-8'
-    return BeautifulSoup(resp.text, "html.parser"), resp.status_code
+        html_text = resp.text
+        soup = BeautifulSoup(html_text, "html.parser")
+        body = soup.find("body")
+        word_count = len(body.get_text(separator=" ").split()) if body else 0
+        if not is_blocked(html_text, resp.status_code) and word_count > 50:
+            return soup, resp.status_code
+    except Exception as e:
+        logger.warning(f"requests hatası: {e}")
+
+    html, status = get_html_with_playwright(url)
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        return soup, status or 200
+    return BeautifulSoup("", "html.parser"), 0
 
 
 def get_internal_links(soup, base_url):
@@ -84,10 +139,8 @@ def safe_text(tag):
 def scrape_page(url):
     try:
         soup, status = get_soup(url)
-
         title_tag = soup.find("title")
         title = safe_text(title_tag)
-
         meta_desc = soup.find("meta", attrs={"name": "description"}) or \
                     soup.find("meta", attrs={"property": "og:description"})
         meta_description = meta_desc.get("content", "").strip() if meta_desc else None
@@ -96,28 +149,20 @@ def scrape_page(url):
                 meta_description = meta_description.encode('latin-1').decode('utf-8')
             except (UnicodeEncodeError, UnicodeDecodeError):
                 pass
-
         og_title_tag = soup.find("meta", attrs={"property": "og:title"})
         og_title = og_title_tag.get("content", "").strip() if og_title_tag else None
-
         canonical_tag = soup.find("link", attrs={"rel": "canonical"})
         canonical = canonical_tag.get("href", "").strip() if canonical_tag else None
-
         h1_tags = [safe_text(h) for h in soup.find_all("h1")]
         h2_tags = [safe_text(h) for h in soup.find_all("h2")]
         h3_tags = [safe_text(h) for h in soup.find_all("h3")]
-
         body = soup.find("body")
         word_count = len(body.get_text(separator=" ").split()) if body else 0
-
         viewport = soup.find("meta", attrs={"name": "viewport"})
         has_mobile_friendly = bool(viewport and "width=device-width" in viewport.get("content", "").lower())
-
         images = soup.find_all("img")
         images_without_alt = sum(1 for img in images if not img.get("alt", "").strip())
-
         internal_links = get_internal_links(soup, url)
-
         return {
             "url": url, "status_code": status,
             "title": title, "meta_description": meta_description,
@@ -144,17 +189,14 @@ def scrape_page(url):
 def build_summary(pages):
     successful = [p for p in pages if not p.get("error")]
     error_pages_list = [p for p in pages if p.get("error")]
-
     total_words = sum(p.get("word_count", 0) for p in successful)
     avg_word_count = round(total_words / len(successful)) if successful else 0
     total_images_without_alt = sum(p.get("images_without_alt", 0) for p in successful)
-
     pages_missing_title = [p["url"] for p in successful if not p.get("title")]
     pages_missing_meta = [p["url"] for p in successful if not p.get("meta_description")]
     pages_missing_h1 = [p["url"] for p in successful if not p.get("h1_tags")]
     pages_with_multiple_h1 = [p["url"] for p in successful if len(p.get("h1_tags", [])) > 1]
     pages_not_mobile_friendly = [p["url"] for p in successful if not p.get("has_mobile_friendly")]
-
     issues = []
     if pages_with_multiple_h1:
         issues.append({"level": "red", "text": f"{len(pages_with_multiple_h1)} sayfada birden fazla H1 var (SEO hatası)", "pages": pages_with_multiple_h1})
@@ -170,7 +212,6 @@ def build_summary(pages):
         issues.append({"level": "red", "text": f"{len(pages_not_mobile_friendly)} sayfa mobil uyumlu değil", "pages": pages_not_mobile_friendly})
     if avg_word_count < 300:
         issues.append({"level": "orange", "text": f"Ortalama sayfa içeriği çok az ({avg_word_count} kelime)", "pages": []})
-
     return {
         "total_pages_crawled": len(pages),
         "successful_pages": len(successful),
@@ -190,7 +231,6 @@ def scrape_seo(start_url):
     visited = set()
     to_visit = [start_url]
     pages = []
-
     while to_visit and len(pages) < MAX_PAGES:
         url = to_visit.pop(0)
         parsed = urlparse(url)
@@ -205,10 +245,8 @@ def scrape_seo(start_url):
             for link in page_data.get("internal_links", []):
                 if link not in visited and link not in to_visit:
                     to_visit.append(link)
-
     summary = build_summary(pages)
     homepage = pages[0] if pages else {}
-
     return {
         "url": start_url,
         "title": homepage.get("title"),
